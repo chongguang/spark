@@ -1170,7 +1170,9 @@ case class LastDay(startDate: Expression)
   group = "datetime_funcs",
   since = "1.5.0")
 // scalastyle:on line.size.limit
-case class NextDay(startDate: Expression, dayOfWeek: Expression)
+case class NextDay(startDate: Expression,
+                   dayOfWeek: Expression,
+                   failOnError: Boolean = SQLConf.get.ansiEnabled)
   extends BinaryExpression with ImplicitCastInputTypes with NullIntolerant {
 
   override def left: Expression = startDate
@@ -1181,10 +1183,36 @@ case class NextDay(startDate: Expression, dayOfWeek: Expression)
   override def dataType: DataType = DateType
   override def nullable: Boolean = true
 
+  override def eval(input: InternalRow): Any = {
+    val start = left.eval(input)
+    if (start == null) {
+      if (failOnError) {
+        throw new IllegalArgumentException("Illegal input for start date.")
+      } else {
+        null
+      }
+    } else {
+      val dow = right.eval(input)
+      if (dow == null) {
+        if (failOnError) {
+          throw new IllegalArgumentException("Illegal input for day of week.")
+        } else {
+          null
+        }
+      } else {
+        nullSafeEval(start, dow)
+      }
+    }
+  }
+
   override def nullSafeEval(start: Any, dayOfW: Any): Any = {
     val dow = DateTimeUtils.getDayOfWeekFromString(dayOfW.asInstanceOf[UTF8String])
     if (dow == -1) {
-      null
+      if (failOnError) {
+        throw new IllegalArgumentException(s"Illegal input for dayOfWeek: $dayOfW.")
+      } else {
+        null
+      }
     } else {
       val sd = start.asInstanceOf[Int]
       DateTimeUtils.getNextDateForDayOfWeek(sd, dow)
@@ -1195,12 +1223,18 @@ case class NextDay(startDate: Expression, dayOfWeek: Expression)
     nullSafeCodeGen(ctx, ev, (sd, dowS) => {
       val dateTimeUtilClass = DateTimeUtils.getClass.getName.stripSuffix("$")
       val dayOfWeekTerm = ctx.freshName("dayOfWeek")
+      val failOnErrorTerm = ctx.freshName("failOnError")
       if (dayOfWeek.foldable) {
         val input = dayOfWeek.eval().asInstanceOf[UTF8String]
         if ((input eq null) || DateTimeUtils.getDayOfWeekFromString(input) == -1) {
           s"""
-             |${ev.isNull} = true;
-           """.stripMargin
+             |boolean $failOnErrorTerm = $failOnError;
+             |if ($failOnErrorTerm) {
+             |  throw new IllegalArgumentException("Illegal input for dayOfWeek: $input.");
+             |} else {
+             |  ${ev.isNull} = true;
+             |}
+             |""".stripMargin
         } else {
           val dayOfWeekValue = DateTimeUtils.getDayOfWeekFromString(input)
           s"""
@@ -1208,10 +1242,20 @@ case class NextDay(startDate: Expression, dayOfWeek: Expression)
            """.stripMargin
         }
       } else {
+        val invalidBranch =
+          s"""
+             |boolean $failOnErrorTerm = $failOnError;
+             |if ($failOnErrorTerm) {
+             |  throw new IllegalArgumentException("Illegal input for dayOfWeek: $dowS.");
+             |} else {
+             |  ${ev.isNull} = true;
+             |}
+             |""".stripMargin
+
         s"""
            |int $dayOfWeekTerm = $dateTimeUtilClass.getDayOfWeekFromString($dowS);
            |if ($dayOfWeekTerm == -1) {
-           |  ${ev.isNull} = true;
+           |  $invalidBranch
            |} else {
            |  ${ev.value} = $dateTimeUtilClass.getNextDateForDayOfWeek($sd, $dayOfWeekTerm);
            |}

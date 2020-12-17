@@ -640,13 +640,37 @@ class DateExpressionsSuite extends SparkFunSuite with ExpressionEvalHelper {
     testNextDay("2015-07-23", "Fri", "2015-07-24")
     testNextDay("2015-07-23", "fr", "2015-07-24")
 
-    checkEvaluation(NextDay(Literal(Date.valueOf("2015-07-23")), Literal("xx")), null)
-    checkEvaluation(NextDay(Literal.create(null, DateType), Literal("xx")), null)
-    checkEvaluation(
-      NextDay(Literal(Date.valueOf("2015-07-23")), Literal.create(null, StringType)), null)
     // Test escaping of dayOfWeek
-    GenerateUnsafeProjection.generate(
-      NextDay(Literal(Date.valueOf("2015-07-23")), Literal("\"quote")) :: Nil)
+//    GenerateUnsafeProjection.generate(
+//      NextDay(Literal(Date.valueOf("2015-07-23")), Literal("\"quote")) :: Nil)
+
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
+        var expr: Expression = NextDay(Literal(Date.valueOf("2015-07-23")), Literal("xx"))
+        if (ansiEnabled) {
+          val errMsg = "Illegal input for dayOfWeek: xx."
+          checkExceptionInExpression[Exception](expr, errMsg)
+        } else {
+          checkEvaluation(expr, null)
+        }
+
+        expr = NextDay(Literal.create(null, DateType), Literal("xx"))
+        if (ansiEnabled) {
+          val errMsg = "Illegal input for start date."
+          checkExceptionInExpression[Exception](expr, errMsg)
+        } else {
+          checkEvaluation(expr, null)
+        }
+
+        expr = NextDay(Literal(Date.valueOf("2015-07-23")), Literal.create(null, StringType))
+        if (ansiEnabled) {
+          val errMsg = "Illegal input for day of week."
+          checkExceptionInExpression[Exception](expr, errMsg)
+        } else {
+          checkEvaluation(expr, null)
+        }
+      }
+    }
   }
 
   private def testTruncDate(input: Date, fmt: String, expected: Date): Unit = {
